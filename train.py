@@ -2,6 +2,7 @@ import numpy as np
 import sys
 import os
 import glob
+import argparse
 
 # Add project root to path
 project_root = os.path.dirname(os.path.abspath(__file__))
@@ -10,6 +11,37 @@ sys.path.insert(0, project_root)
 # Import preprocessing and model functions
 from preprocessing.preprocessing import preprocess_data, save_preprocessing_params
 from models.lstm_model import train_model, predict_rul
+
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="Train the LSTM RUL model on CMAPSS training data."
+    )
+    parser.add_argument(
+        "--data-dir",
+        default="CMAPSSData",
+        help="Directory containing CMAPSSData files (default: CMAPSSData).",
+    )
+    parser.add_argument(
+        "--train-file",
+        default=None,
+        help=(
+            "Train on a single training file instead of all train_*.txt. "
+            "Can be a filename (e.g., train_FD001.txt) or a full/relative path."
+        ),
+    )
+    return parser.parse_args()
+
+
+def _resolve_single_file(data_dir: str, file_arg: str) -> str:
+    # If the user passed an existing path, use it directly.
+    if os.path.exists(file_arg):
+        return file_arg
+    # Otherwise, try relative to the data directory.
+    candidate = os.path.join(data_dir, file_arg)
+    if os.path.exists(candidate):
+        return candidate
+    return file_arg  # fall back; caller will error with a clear message
+
 
 def main():
     """
@@ -24,9 +56,18 @@ def main():
     print("Training LSTM Model for Remaining Useful Life Prediction")
     print("=" * 60)
     
-    # Find all training files
-    data_dir = 'CMAPSSData'
-    train_files = sorted(glob.glob(os.path.join(data_dir, 'train_*.txt')))
+    args = parse_args()
+
+    # Find training files (all by default; or a single file if provided)
+    data_dir = args.data_dir
+    if args.train_file:
+        single_train_file = _resolve_single_file(data_dir, args.train_file)
+        if not os.path.exists(single_train_file):
+            print(f"Error: Training file not found: {single_train_file}")
+            return
+        train_files = [single_train_file]
+    else:
+        train_files = sorted(glob.glob(os.path.join(data_dir, 'train_*.txt')))
     
     if not train_files:
         print(f"Error: No training files found in {data_dir}")
@@ -46,7 +87,7 @@ def main():
     
     for train_file in train_files:
         print(f"  Loading: {train_file}")
-        df = pd.read_csv(train_file, sep='\s+', header=None, names=COLUMNS)
+        df = pd.read_csv(train_file, sep=r"\s+", header=None, names=COLUMNS)
         # Adjust unit_ids to be unique across all files
         df['unit_id'] = df['unit_id'] + max_unit_id
         max_unit_id = df['unit_id'].max()
@@ -85,8 +126,8 @@ def main():
         windows_array,
         rul_array,
         validation_split=0.2,
-        epochs=30,
-        batch_size=128,
+        epochs=20,
+        batch_size=64,
         verbose=1
     )
     

@@ -18,7 +18,7 @@ def preprocess_data(file_path=None, df=None, preprocessing_params=None, compute_
                              If None, parameters will be computed from the data.
                              Should contain: 'sensor_columns_to_keep', 'min_max_values', 'feature_columns'
         compute_rul: Whether to compute RUL (True for training, False for test)
-        window_size: Size of the sliding window (default: 60)
+        window_size: Size of the sliding window (default: 30)
     
     Returns:
         windows_array: Numpy array of shape (num_windows, window_size, num_features)
@@ -30,7 +30,7 @@ def preprocess_data(file_path=None, df=None, preprocessing_params=None, compute_
     if df is None:
         if file_path is None:
             raise ValueError("Either file_path or df must be provided")
-        df = pd.read_csv(file_path, sep='\s+', header=None, names=COLUMNS)
+        df = pd.read_csv(file_path, sep=r"\s+", header=None, names=COLUMNS)
     else:
         # Make a copy to avoid modifying the original
         df = df.copy()
@@ -55,8 +55,14 @@ def preprocess_data(file_path=None, df=None, preprocessing_params=None, compute_
         column_variances = df[sensor_columns].var()
         sensor_columns_to_keep = column_variances[column_variances >= variance_threshold].index.tolist()
     else:
-        # Use pre-computed columns (test mode)
-        sensor_columns_to_keep = preprocessing_params['sensor_columns_to_keep']
+        # Use pre-computed columns (test mode or federated mode with global feature selection)
+        if 'sensor_columns_to_keep' in preprocessing_params:
+            sensor_columns_to_keep = preprocessing_params['sensor_columns_to_keep']
+        else:
+            # Fallback: compute from data if not provided
+            variance_threshold = 0.01
+            column_variances = df[sensor_columns].var()
+            sensor_columns_to_keep = column_variances[column_variances >= variance_threshold].index.tolist()
     
     # Keep all feature columns (sensor + op_setting), but only filtered sensor columns
     non_sensor_features = [col for col in feature_columns if not col.startswith('sensor')]
@@ -81,8 +87,9 @@ def preprocess_data(file_path=None, df=None, preprocessing_params=None, compute_
         )
     
     # Step 3: Normalize sensor columns to scale 0 -> 1 (Min-Max scaling)
-    if preprocessing_params is None:
-        # Compute min/max values (training mode)
+    # If preprocessing_params has min_max_values, use them; otherwise compute locally
+    if preprocessing_params is None or 'min_max_values' not in preprocessing_params:
+        # Compute min/max values locally (for federated learning, each client computes its own)
         min_max_values = {}
         for col in sensor_columns:
             min_val = df[col].min()
@@ -91,7 +98,7 @@ def preprocess_data(file_path=None, df=None, preprocessing_params=None, compute_
             if max_val != min_val:  # Avoid division by zero
                 df[col] = (df[col] - min_val) / (max_val - min_val)
     else:
-        # Use pre-computed min/max values (test mode)
+        # Use pre-computed min/max values (test mode or centralized training)
         min_max_values = preprocessing_params['min_max_values']
         for col in sensor_columns:
             if col in min_max_values:

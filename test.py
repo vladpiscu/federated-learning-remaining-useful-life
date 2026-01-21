@@ -3,6 +3,7 @@ import sys
 import os
 import pandas as pd
 import glob
+import argparse
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 
 # Add project root to path
@@ -20,10 +21,41 @@ def load_true_rul(rul_file_path):
     Load true RUL values from the RUL file.
     The RUL file contains one RUL value per test unit (the RUL at the last cycle).
     """
-    rul_df = pd.read_csv(rul_file_path, sep='\s+', header=None, names=['RUL'])
+    rul_df = pd.read_csv(rul_file_path, sep=r"\s+", header=None, names=["RUL"])
     return rul_df['RUL'].values
 
-def get_last_window_per_unit(windows_array, test_file_path):
+
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="Test the trained LSTM RUL model on CMAPSS test data."
+    )
+    parser.add_argument(
+        "--data-dir",
+        default="CMAPSSData",
+        help="Directory containing CMAPSSData files (default: CMAPSSData).",
+    )
+    parser.add_argument(
+        "--test-file",
+        default=None,
+        help=(
+            "Test on a single test file instead of all test_*.txt. "
+            "Can be a filename (e.g., test_FD001.txt) or a full/relative path."
+        ),
+    )
+    return parser.parse_args()
+
+
+def _resolve_single_file(data_dir: str, file_arg: str) -> str:
+    # If the user passed an existing path, use it directly.
+    if os.path.exists(file_arg):
+        return file_arg
+    # Otherwise, try relative to the data directory.
+    candidate = os.path.join(data_dir, file_arg)
+    if os.path.exists(candidate):
+        return candidate
+    return file_arg  # fall back; caller will error with a clear message
+
+def get_last_window_per_unit(windows_array, test_file_path, window_size=None):
     """
     For test data, we need to predict RUL for each unit at its last cycle.
     This function identifies the last window for each unit.
@@ -36,10 +68,16 @@ def get_last_window_per_unit(windows_array, test_file_path):
         last_windows_indices: Indices of the last window for each unit
         unit_ids: Unit IDs corresponding to each last window
     """
+    if window_size is None:
+        # Derive window size from the preprocessed tensor to avoid mismatches.
+        if windows_array is None or len(windows_array) == 0:
+            return np.array([], dtype=int), np.array([], dtype=int)
+        window_size = int(windows_array.shape[1])
+
     # Load test data to get unit structure
     columns = ['unit_id', 'time_cycles', 'op_setting_1', 'op_setting_2', 'op_setting_3'] + \
               [f'sensor_{i}' for i in range(1, 22)]
-    df = pd.read_csv(test_file_path, sep='\s+', header=None, names=columns)
+    df = pd.read_csv(test_file_path, sep=r"\s+", header=None, names=columns)
     
     # Get unique unit IDs
     unique_units = df['unit_id'].unique()
@@ -52,7 +90,7 @@ def get_last_window_per_unit(windows_array, test_file_path):
     window_idx = 0
     for unit_id in unique_units:
         unit_data = df[df['unit_id'] == unit_id].sort_values('time_cycles')
-        num_windows = len(unit_data) - 60 + 1  # window_size = 60
+        num_windows = len(unit_data) - window_size + 1
         
         if num_windows > 0:
             # Last window index for this unit
@@ -94,6 +132,8 @@ def main():
     print("=" * 60)
     print("Testing LSTM Model on Test Data")
     print("=" * 60)
+
+    args = parse_args()
     
     # Load model
     model_path = os.path.join('models', 'lstm_rul_model.h5')
@@ -137,8 +177,15 @@ def main():
     print("Preprocessing parameters loaded successfully!")
     
     # Find all test files
-    data_dir = 'CMAPSSData'
-    test_files = sorted(glob.glob(os.path.join(data_dir, 'test_*.txt')))
+    data_dir = args.data_dir
+    if args.test_file:
+        single_test_file = _resolve_single_file(data_dir, args.test_file)
+        if not os.path.exists(single_test_file):
+            print(f"Error: Test file not found: {single_test_file}")
+            return
+        test_files = [single_test_file]
+    else:
+        test_files = sorted(glob.glob(os.path.join(data_dir, 'test_*.txt')))
     
     if not test_files:
         print(f"Error: No test files found in {data_dir}")
