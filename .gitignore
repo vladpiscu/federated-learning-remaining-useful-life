@@ -1,0 +1,8 @@
+# Virtual environments
+venv/
+
+# Dataset
+CMAPSSData/
+
+# OS files
+.DS_Store
