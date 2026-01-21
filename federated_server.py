@@ -43,6 +43,60 @@ class SavingFedProx(fl.server.strategy.FedProx):
         print(f"\nSaved aggregated model to: {self._out_model_path}")
 
 
+def aggregate_metrics(metrics):
+    """
+    Aggregate client metrics using weighted average (by number of samples).
+    Also computes worst-case and average statistics.
+    
+    Args:
+        metrics: List of tuples (num_samples, metrics_dict) from each client
+    
+    Returns:
+        Aggregated metrics dictionary with average and worst-case metrics
+    """
+    if not metrics:
+        return {}
+    
+    total_samples = sum(num_samples for num_samples, _ in metrics)
+    if total_samples == 0:
+        return {}
+    
+    # Get all metric names from first client
+    metric_names = list(metrics[0][1].keys())
+    
+    aggregated = {}
+    
+    # Compute weighted averages
+    for metric_name in metric_names:
+        weighted_sum = sum(
+            num_samples * metric_dict.get(metric_name, 0.0)
+            for num_samples, metric_dict in metrics
+        )
+        aggregated[f"{metric_name}_avg"] = weighted_sum / total_samples
+    
+    # Compute worst-case (maximum for error metrics, minimum for R²)
+    for metric_name in metric_names:
+        if metric_name == "r2":
+            # For R², worst-case is minimum (worst fit)
+            worst_value = min(
+                metric_dict.get(metric_name, float('inf'))
+                for _, metric_dict in metrics
+            )
+        else:
+            # For error metrics (MSE, MAE, RMSE), worst-case is maximum
+            worst_value = max(
+                metric_dict.get(metric_name, 0.0)
+                for _, metric_dict in metrics
+            )
+        aggregated[f"{metric_name}_worst"] = worst_value
+    
+    # Also store average metrics without _avg suffix for compatibility
+    for metric_name in metric_names:
+        aggregated[metric_name] = aggregated[f"{metric_name}_avg"]
+    
+    return aggregated
+
+
 def create_server_strategy(
     input_shape: tuple,
     num_rounds: int,
@@ -95,6 +149,8 @@ def create_server_strategy(
         proximal_mu=float(proximal_mu),
         model_builder=lambda: build_lstm_model(input_shape=input_shape),
         out_model_path=out_model_path,
+        fit_metrics_aggregation_fn=aggregate_metrics,
+        evaluate_metrics_aggregation_fn=aggregate_metrics,
     )
     
     return strategy, initial_parameters, fit_config

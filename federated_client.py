@@ -181,14 +181,34 @@ class RULClient(fl.client.NumPyClient):
 
         # Evaluate on validation set (or training set if no validation)
         if self.X_val is not None and len(self.X_val) > 0:
-            loss, mae, mse = self.model.evaluate(self.X_val, self.y_val, verbose=0)
+            X_eval, y_eval = self.X_val, self.y_val
             num_examples = len(self.X_val)
         else:
             # Fallback to training set if no validation data
-            loss, mae, mse = self.model.evaluate(self.X_train, self.y_train, verbose=0)
+            X_eval, y_eval = self.X_train, self.y_train
             num_examples = len(self.X_train)
 
-        return float(loss), num_examples, {"mae": float(mae), "mse": float(mse)}
+        # Get predictions
+        y_pred = self.model.predict(X_eval, verbose=0).flatten()
+        y_true = y_eval.flatten()
+
+        # Compute comprehensive metrics (same as test.py)
+        from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
+        
+        mse = mean_squared_error(y_true, y_pred)
+        mae = mean_absolute_error(y_true, y_pred)
+        rmse = np.sqrt(mse)
+        r2 = r2_score(y_true, y_pred)
+        
+        # Also get model's loss for compatibility
+        loss = float(mse)  # Use MSE as loss metric
+
+        return float(loss), num_examples, {
+            "mae": float(mae),
+            "mse": float(mse),
+            "rmse": float(rmse),
+            "r2": float(r2),
+        }
 
 
 def create_client_for_data(
