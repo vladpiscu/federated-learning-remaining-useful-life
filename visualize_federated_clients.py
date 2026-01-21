@@ -36,6 +36,19 @@ def parse_args():
         default="visualizations",
         help="Directory to save visualization outputs. Default: visualizations",
     )
+    parser.add_argument(
+        "--num-engines-per-client",
+        type=int,
+        default=3,
+        help="Number of example engines to visualize per client. Default: 3",
+    )
+    parser.add_argument(
+        "--sensors-to-plot",
+        type=str,
+        nargs="+",
+        default=None,
+        help="Specific sensors to plot (e.g., sensor_1 sensor_2). If not provided, will plot top variance sensors.",
+    )
     return parser.parse_args()
 
 
@@ -416,6 +429,255 @@ def visualize_sensor_variance(partitions_with_rul: List, output_dir: str):
     print("=" * 80)
 
 
+def visualize_sensor_trends(partitions_with_rul: List, output_dir: str, num_engines_per_client: int = 3, sensors_to_plot: List = None):
+    """
+    Visualize sensor trends over cycles for example engines from each client.
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    
+    print("\nGenerating sensor trend visualizations...")
+    
+    # Get sensor columns
+    sensor_columns = [col for col in COLUMNS if col.startswith("sensor")]
+    
+    # If specific sensors requested, use those; otherwise use top variance sensors
+    if sensors_to_plot is None:
+        # Compute global variance to find most informative sensors
+        all_data = pd.concat(partitions_with_rul, ignore_index=True)
+        global_variances = all_data[sensor_columns].var().sort_values(ascending=False)
+        sensors_to_plot = global_variances.head(6).index.tolist()  # Top 6 sensors
+        print(f"  Using top 6 sensors by variance: {sensors_to_plot}")
+    else:
+        # Validate requested sensors
+        sensors_to_plot = [s for s in sensors_to_plot if s in sensor_columns]
+        if not sensors_to_plot:
+            print(f"  Warning: No valid sensors found. Using default top sensors.")
+            all_data = pd.concat(partitions_with_rul, ignore_index=True)
+            global_variances = all_data[sensor_columns].var().sort_values(ascending=False)
+            sensors_to_plot = global_variances.head(6).index.tolist()
+    
+    # Visualize for each client
+    for client_id, partition_df in enumerate(partitions_with_rul):
+        # Get unique unit_ids for this client
+        unique_units = sorted(partition_df['unit_id'].unique())
+        
+        # Select example engines (spread across the range)
+        if len(unique_units) <= num_engines_per_client:
+            selected_units = unique_units
+        else:
+            # Select evenly spaced units
+            indices = np.linspace(0, len(unique_units) - 1, num_engines_per_client, dtype=int)
+            selected_units = [unique_units[i] for i in indices]
+        
+        # Create subplot for each engine
+        n_engines = len(selected_units)
+        n_cols = min(2, n_engines)
+        n_rows = (n_engines + n_cols - 1) // n_cols
+        
+        fig, axes = plt.subplots(n_rows, n_cols, figsize=(7*n_cols, 5*n_rows))
+        if n_engines == 1:
+            axes = [axes]
+        elif n_rows == 1:
+            axes = axes if isinstance(axes, list) else [axes]
+        else:
+            axes = axes.flatten()
+        
+        for idx, unit_id in enumerate(selected_units):
+            ax = axes[idx]
+            unit_data = partition_df[partition_df['unit_id'] == unit_id].sort_values('time_cycles')
+            
+            # Plot each sensor
+            colors = plt.cm.tab10(np.linspace(0, 1, len(sensors_to_plot)))
+            for sensor, color in zip(sensors_to_plot, colors):
+                ax.plot(unit_data['time_cycles'], unit_data[sensor], 
+                       label=sensor, color=color, alpha=0.7, linewidth=1.5)
+            
+            ax.set_xlabel('Time Cycles', fontsize=11)
+            ax.set_ylabel('Sensor Value', fontsize=11)
+            ax.set_title(f'Client {client_id} - Engine {unit_id}\nSensor Trends Over Cycles', 
+                        fontsize=12, fontweight='bold')
+            ax.legend(loc='best', fontsize=8, ncol=2)
+            ax.grid(True, alpha=0.3)
+        
+        # Hide empty subplots
+        for idx in range(n_engines, len(axes)):
+            axes[idx].axis('off')
+        
+        plt.suptitle(f'Sensor Trends for Example Engines - Client {client_id}', 
+                    fontsize=14, fontweight='bold', y=0.995)
+        plt.tight_layout()
+        output_path = os.path.join(output_dir, f"sensor_trends_client_{client_id}.png")
+        plt.savefig(output_path, dpi=300, bbox_inches='tight')
+        print(f"  Saved: {output_path}")
+        plt.close()
+        
+        # Also create a combined plot showing all selected engines on one plot (separate subplot per sensor)
+        if len(sensors_to_plot) > 0:
+            n_sensors = len(sensors_to_plot)
+            n_cols_sensor = min(3, n_sensors)
+            n_rows_sensor = (n_sensors + n_cols_sensor - 1) // n_cols_sensor
+            
+            fig, axes = plt.subplots(n_rows_sensor, n_cols_sensor, figsize=(6*n_cols_sensor, 4*n_rows_sensor))
+            if n_sensors == 1:
+                axes = [axes]
+            elif n_rows_sensor == 1:
+                axes = axes if isinstance(axes, list) else [axes]
+            else:
+                axes = axes.flatten()
+            
+            engine_colors = plt.cm.Set3(np.linspace(0, 1, len(selected_units)))
+            
+            for sensor_idx, sensor in enumerate(sensors_to_plot):
+                ax = axes[sensor_idx]
+                
+                for unit_idx, unit_id in enumerate(selected_units):
+                    unit_data = partition_df[partition_df['unit_id'] == unit_id].sort_values('time_cycles')
+                    ax.plot(unit_data['time_cycles'], unit_data[sensor], 
+                           label=f'Engine {unit_id}', color=engine_colors[unit_idx], 
+                           alpha=0.7, linewidth=1.5)
+                
+                ax.set_xlabel('Time Cycles', fontsize=10)
+                ax.set_ylabel('Sensor Value', fontsize=10)
+                ax.set_title(sensor, fontsize=11, fontweight='bold')
+                ax.legend(loc='best', fontsize=8)
+                ax.grid(True, alpha=0.3)
+            
+            # Hide empty subplots
+            for idx in range(n_sensors, len(axes)):
+                axes[idx].axis('off')
+            
+            plt.suptitle(f'Sensor Trends Comparison - Client {client_id}\n(All Engines)', 
+                        fontsize=14, fontweight='bold', y=0.995)
+            plt.tight_layout()
+            output_path = os.path.join(output_dir, f"sensor_trends_comparison_client_{client_id}.png")
+            plt.savefig(output_path, dpi=300, bbox_inches='tight')
+            print(f"  Saved: {output_path}")
+            plt.close()
+
+
+def visualize_rul_vs_cycles(partitions_with_rul: List, output_dir: str, num_engines_per_client: int = 3):
+    """
+    Visualize RUL vs cycles for example engines from each client.
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    
+    print("\nGenerating RUL vs cycles visualizations...")
+    
+    # Visualize for each client
+    for client_id, partition_df in enumerate(partitions_with_rul):
+        # Get unique unit_ids for this client
+        unique_units = sorted(partition_df['unit_id'].unique())
+        
+        # Select example engines (spread across the range)
+        if len(unique_units) <= num_engines_per_client:
+            selected_units = unique_units
+        else:
+            # Select evenly spaced units
+            indices = np.linspace(0, len(unique_units) - 1, num_engines_per_client, dtype=int)
+            selected_units = [unique_units[i] for i in indices]
+        
+        # Create subplot for each engine
+        n_engines = len(selected_units)
+        n_cols = min(2, n_engines)
+        n_rows = (n_engines + n_cols - 1) // n_cols
+        
+        fig, axes = plt.subplots(n_rows, n_cols, figsize=(7*n_cols, 5*n_rows))
+        if n_engines == 1:
+            axes = [axes]
+        elif n_rows == 1:
+            axes = axes if isinstance(axes, list) else [axes]
+        else:
+            axes = axes.flatten()
+        
+        for idx, unit_id in enumerate(selected_units):
+            ax = axes[idx]
+            unit_data = partition_df[partition_df['unit_id'] == unit_id].sort_values('time_cycles')
+            
+            # Plot RUL vs cycles
+            ax.plot(unit_data['time_cycles'], unit_data['RUL'], 
+                   color='red', linewidth=2, alpha=0.8, label='RUL')
+            
+            # Add a line showing the trend (optional: linear fit)
+            z = np.polyfit(unit_data['time_cycles'], unit_data['RUL'], 1)
+            p = np.poly1d(z)
+            ax.plot(unit_data['time_cycles'], p(unit_data['time_cycles']), 
+                   "r--", alpha=0.5, linewidth=1, label=f'Trend (slope={z[0]:.2f})')
+            
+            ax.set_xlabel('Time Cycles', fontsize=11)
+            ax.set_ylabel('Remaining Useful Life (RUL)', fontsize=11)
+            ax.set_title(f'Client {client_id} - Engine {unit_id}\nRUL Degradation Over Cycles', 
+                        fontsize=12, fontweight='bold')
+            ax.legend(loc='best', fontsize=9)
+            ax.grid(True, alpha=0.3)
+            ax.invert_yaxis()  # RUL decreases over time, so invert for better visualization
+        
+        # Hide empty subplots
+        for idx in range(n_engines, len(axes)):
+            axes[idx].axis('off')
+        
+        plt.suptitle(f'RUL vs Cycles for Example Engines - Client {client_id}', 
+                    fontsize=14, fontweight='bold', y=0.995)
+        plt.tight_layout()
+        output_path = os.path.join(output_dir, f"rul_vs_cycles_client_{client_id}.png")
+        plt.savefig(output_path, dpi=300, bbox_inches='tight')
+        print(f"  Saved: {output_path}")
+        plt.close()
+        
+        # Also create a combined plot showing all selected engines on one plot
+        fig, ax = plt.subplots(figsize=(10, 6))
+        
+        colors = plt.cm.tab10(np.linspace(0, 1, len(selected_units)))
+        
+        for unit_idx, unit_id in enumerate(selected_units):
+            unit_data = partition_df[partition_df['unit_id'] == unit_id].sort_values('time_cycles')
+            ax.plot(unit_data['time_cycles'], unit_data['RUL'], 
+                   label=f'Engine {unit_id}', color=colors[unit_idx], 
+                   linewidth=2, alpha=0.8, marker='o', markersize=3)
+        
+        ax.set_xlabel('Time Cycles', fontsize=12)
+        ax.set_ylabel('Remaining Useful Life (RUL)', fontsize=12)
+        ax.set_title(f'RUL Degradation Comparison - Client {client_id}\n(All Example Engines)', 
+                    fontsize=14, fontweight='bold')
+        ax.legend(loc='best', fontsize=10)
+        ax.grid(True, alpha=0.3)
+        ax.invert_yaxis()  # RUL decreases over time
+        
+        plt.tight_layout()
+        output_path = os.path.join(output_dir, f"rul_vs_cycles_comparison_client_{client_id}.png")
+        plt.savefig(output_path, dpi=300, bbox_inches='tight')
+        print(f"  Saved: {output_path}")
+        plt.close()
+        
+        # Create a normalized RUL plot (0-1 scale) for easier comparison
+        fig, ax = plt.subplots(figsize=(10, 6))
+        
+        for unit_idx, unit_id in enumerate(selected_units):
+            unit_data = partition_df[partition_df['unit_id'] == unit_id].sort_values('time_cycles')
+            # Normalize cycles to 0-1 and RUL to 0-1
+            normalized_cycles = (unit_data['time_cycles'] - unit_data['time_cycles'].min()) / \
+                               (unit_data['time_cycles'].max() - unit_data['time_cycles'].min() + 1e-10)
+            normalized_rul = (unit_data['RUL'] - unit_data['RUL'].min()) / \
+                            (unit_data['RUL'].max() - unit_data['RUL'].min() + 1e-10)
+            
+            ax.plot(normalized_cycles, normalized_rul, 
+                   label=f'Engine {unit_id}', color=colors[unit_idx], 
+                   linewidth=2, alpha=0.8, marker='o', markersize=3)
+        
+        ax.set_xlabel('Normalized Time Cycles (0-1)', fontsize=12)
+        ax.set_ylabel('Normalized RUL (0-1)', fontsize=12)
+        ax.set_title(f'Normalized RUL Degradation Comparison - Client {client_id}\n(All Example Engines)', 
+                    fontsize=14, fontweight='bold')
+        ax.legend(loc='best', fontsize=10)
+        ax.grid(True, alpha=0.3)
+        ax.invert_yaxis()  # RUL decreases over time
+        
+        plt.tight_layout()
+        output_path = os.path.join(output_dir, f"rul_vs_cycles_normalized_client_{client_id}.png")
+        plt.savefig(output_path, dpi=300, bbox_inches='tight')
+        print(f"  Saved: {output_path}")
+        plt.close()
+
+
 def main():
     args = parse_args()
     
@@ -449,6 +711,15 @@ def main():
     
     # Visualize sensor variance differences
     visualize_sensor_variance(partitions_with_rul, args.output_dir)
+    
+    # Visualize sensor trends for engines
+    visualize_sensor_trends(partitions_with_rul, args.output_dir, 
+                           num_engines_per_client=args.num_engines_per_client,
+                           sensors_to_plot=args.sensors_to_plot)
+    
+    # Visualize RUL vs cycles for engines
+    visualize_rul_vs_cycles(partitions_with_rul, args.output_dir, 
+                           num_engines_per_client=args.num_engines_per_client)
     
     print(f"\n" + "=" * 60)
     print(f"Visualization complete! Outputs saved to: {args.output_dir}")
