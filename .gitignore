@@ -3,9 +3,12 @@ venv/
 .venv/
 __pycache__/
 *.h5
+*.png
+*.pkl
 
 # Dataset
 CMAPSSData/
+models/client_metrics/
 
 # OS files
 .DS_Store
