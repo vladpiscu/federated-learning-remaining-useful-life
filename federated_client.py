@@ -1,6 +1,8 @@
 import argparse
+import json
 import os
 import sys
+from typing import Optional
 
 # Add project root to path
 project_root = os.path.dirname(os.path.abspath(__file__))
@@ -58,7 +60,7 @@ def _resolve_single_file(data_dir: str, file_arg: str) -> str:
     return file_arg
 
 
-def load_unit_data(data_dir: str, train_file: str | None, unit_id: int):
+def load_unit_data(data_dir: str, train_file: Optional[str], unit_id: int):
     """Load data for a specific unit_id from training files."""
     import pandas as pd
     import glob
@@ -97,13 +99,17 @@ def load_unit_data(data_dir: str, train_file: str | None, unit_id: int):
 class RULClient(fl.client.NumPyClient):
     """Flower client that trains on a specific unit's data with FedProx support."""
 
-    def __init__(self, X_train, y_train, X_val, y_val, input_shape):
+    def __init__(self, X_train, y_train, X_val, y_val, input_shape, client_id=None):
         self.model = build_lstm_model(input_shape=input_shape)
         self.X_train = X_train
         self.y_train = y_train
         self.X_val = X_val
         self.y_val = y_val
         self.global_weights = None  # Store global weights for FedProx proximal term
+        self.client_id = client_id  # Store client ID for metrics file naming
+        self.current_round = 0  # Track current round for metrics file naming
+        self.metrics_dir = os.path.join("models", "client_metrics")  # Directory for metrics files
+        os.makedirs(self.metrics_dir, exist_ok=True)
 
     def get_parameters(self, config):
         return self.model.get_weights()
@@ -113,19 +119,22 @@ class RULClient(fl.client.NumPyClient):
         self.model.set_weights(parameters)
         self.global_weights = [np.array(w) for w in parameters]
 
+        # Get current round from config if available
+        self.current_round = int(config.get("server_round", 0))
+
         # Get FedProx proximal term weight (μ)
         proximal_mu = float(config.get("proximal_mu", 0.0))
 
         # Train locally with FedProx proximal term if μ > 0
         epochs = int(config.get("local_epochs", 1))
-        batch_size = int(config.get("batch_size", 256))
+        batch_size = int(config.get("batch_size", 16))
 
         if proximal_mu > 0.0:
             # Custom training with proximal term
-            self._train_with_proximal_term(epochs, batch_size, proximal_mu)
+            history = self._train_with_proximal_term(epochs, batch_size, proximal_mu)
         else:
             # Standard training (FedAvg)
-            self.model.fit(
+            history = self.model.fit(
                 self.X_train,
                 self.y_train,
                 epochs=epochs,
@@ -133,8 +142,72 @@ class RULClient(fl.client.NumPyClient):
                 verbose=0,
             )
 
-        # Return updated weights and number of training examples
-        return self.model.get_weights(), len(self.X_train), {}
+        # Compute metrics on training data for reporting
+        y_pred_train = self.model.predict(self.X_train, verbose=0)
+        if len(y_pred_train.shape) > 1:
+            y_pred_train = y_pred_train.flatten()
+        else:
+            y_pred_train = np.asarray(y_pred_train).flatten()
+        
+        y_true_train = np.asarray(self.y_train).flatten()
+        
+        from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
+        
+        mse = mean_squared_error(y_true_train, y_pred_train)
+        mae = mean_absolute_error(y_true_train, y_pred_train)
+        rmse = np.sqrt(mse)
+        r2 = r2_score(y_true_train, y_pred_train)
+        
+        # Ensure all metrics are scalars
+        mse = float(mse) if not isinstance(mse, np.ndarray) else float(mse.item() if mse.size == 1 else np.mean(mse))
+        mae = float(mae) if not isinstance(mae, np.ndarray) else float(mae.item() if mae.size == 1 else np.mean(mae))
+        rmse = float(rmse) if not isinstance(rmse, np.ndarray) else float(rmse.item() if rmse.size == 1 else np.mean(rmse))
+        r2 = float(r2) if not isinstance(r2, np.ndarray) else float(r2.item() if r2.size == 1 else np.mean(r2))
+        
+        # Get final training loss from history if available
+        train_loss = float(mse)  # Use MSE as loss
+        if history and hasattr(history, 'history') and 'loss' in history.history:
+            last_loss = history.history['loss'][-1]
+            # Handle numpy array or scalar
+            if isinstance(last_loss, np.ndarray):
+                train_loss = float(last_loss.item() if last_loss.size == 1 else np.mean(last_loss))
+            else:
+                train_loss = float(last_loss)
+        
+        # Return updated weights, number of training examples, and metrics
+        # All metrics are already converted to Python scalars above
+        metrics = {
+            "loss": float(train_loss),
+            "mse": mse,
+            "mae": mae,
+            "rmse": rmse,
+            "r2": r2,
+        }
+        
+        # Save metrics to file for later visualization
+        self._save_metrics_to_file(metrics, "fit")
+        
+        return self.model.get_weights(), len(self.X_train), metrics
+    
+    def _save_metrics_to_file(self, metrics, phase="fit"):
+        """Save metrics to a JSON file for later visualization."""
+        try:
+            client_id_str = str(self.client_id) if self.client_id is not None else "unknown"
+            filename = f"client_{client_id_str}_round_{self.current_round}_{phase}.json"
+            filepath = os.path.join(self.metrics_dir, filename)
+            
+            metrics_data = {
+                "client_id": client_id_str,
+                "round": self.current_round,
+                "phase": phase,
+                "metrics": metrics,
+            }
+            
+            with open(filepath, 'w') as f:
+                json.dump(metrics_data, f, indent=2)
+        except Exception as e:
+            # Don't fail training if metrics saving fails
+            print(f"Warning: Could not save metrics to file: {e}")
 
     def _train_with_proximal_term(self, epochs, batch_size, proximal_mu):
         """Train model with FedProx proximal term: loss + (μ/2) * ||w - w_global||²"""
@@ -154,13 +227,22 @@ class RULClient(fl.client.NumPyClient):
         dataset = tf.data.Dataset.from_tensor_slices((self.X_train, self.y_train))
         dataset = dataset.shuffle(buffer_size=len(self.X_train)).batch(batch_size)
 
+        # Track losses for history
+        epoch_losses = []
+        
         for epoch in range(epochs):
+            epoch_loss = 0.0
+            num_batches = 0
+            
             for batch_x, batch_y in dataset:
                 with tf.GradientTape() as tape:
                     # Forward pass
                     predictions = self.model(batch_x, training=True)
-                    # Standard loss
+                    # Standard loss - ensure it's reduced to scalar
                     loss = loss_fn(batch_y, predictions)
+                    # If loss is not scalar, reduce it
+                    if hasattr(loss, 'shape') and len(loss.shape) > 0:
+                        loss = tf.reduce_mean(loss)
 
                     # Add proximal term: (μ/2) * ||w - w_global||²
                     if self.global_weights is not None:
@@ -174,6 +256,28 @@ class RULClient(fl.client.NumPyClient):
                 # Compute gradients and update weights
                 gradients = tape.gradient(loss, self.model.trainable_variables)
                 optimizer.apply_gradients(zip(gradients, self.model.trainable_variables))
+                
+                # Convert loss to scalar - ensure it's a 0-d tensor before converting
+                loss_value = loss
+                if hasattr(loss_value, 'numpy'):
+                    loss_value = loss_value.numpy()
+                if isinstance(loss_value, np.ndarray):
+                    loss_value = float(np.mean(loss_value)) if loss_value.size > 1 else float(loss_value.item())
+                else:
+                    loss_value = float(loss_value)
+                
+                epoch_loss += loss_value
+                num_batches += 1
+            
+            if num_batches > 0:
+                epoch_losses.append(epoch_loss / num_batches)
+        
+        # Create a simple history-like object
+        class SimpleHistory:
+            def __init__(self, losses):
+                self.history = {'loss': losses}
+        
+        return SimpleHistory(epoch_losses)
 
     def evaluate(self, parameters, config):
         # Set global model weights
@@ -216,7 +320,8 @@ def create_client_for_data(
     window_size: int,
     val_split: float,
     input_shape: tuple,
-    global_feature_selection: dict | None = None,
+    global_feature_selection: Optional[dict] = None,
+    client_id=None,
 ):
     """
     Create a Flower client from a DataFrame partition.
@@ -229,6 +334,7 @@ def create_client_for_data(
         input_shape: Model input shape (timesteps, features)
         global_feature_selection: Optional dict with 'sensor_columns_to_keep' to ensure
                                  all clients use the same feature set
+        client_id: Optional client ID for metrics file naming
     
     Returns:
         RULClient instance
@@ -273,17 +379,17 @@ def create_client_for_data(
         X_val, y_val = X[:0], y[:0]
 
     # Create Flower client
-    return RULClient(X_train, y_train, X_val, y_val, input_shape)
+    return RULClient(X_train, y_train, X_val, y_val, input_shape, client_id=client_id)
 
 
 def create_client_for_unit(
     unit_id: int,
     data_dir: str,
-    train_file: str | None,
+    train_file: Optional[str],
     window_size: int,
     val_split: float,
     input_shape: tuple,
-    global_feature_selection: dict | None = None,
+    global_feature_selection: Optional[dict] = None,
 ):
     """
     Create a Flower client for a specific unit_id.

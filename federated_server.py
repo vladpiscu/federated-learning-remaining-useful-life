@@ -131,11 +131,24 @@ def create_server_strategy(
     initial_parameters = fl.common.ndarrays_to_parameters(init_model.get_weights())
 
     # Configure fit/evaluate config functions (include proximal_mu for FedProx)
-    fit_config = {
-        "local_epochs": int(local_epochs),
-        "batch_size": int(batch_size),
-        "proximal_mu": float(proximal_mu),
-    }
+    # Note: server_round will be added dynamically in on_fit_config_fn
+    def fit_config_fn(rnd):
+        return {
+            "local_epochs": int(local_epochs),
+            "batch_size": int(batch_size),
+            "proximal_mu": float(proximal_mu),
+            "server_round": int(rnd),  # Pass round number to clients
+        }
+    
+    def evaluate_config_fn(rnd):
+        return {
+            "local_epochs": int(local_epochs),
+            "batch_size": int(batch_size),
+            "proximal_mu": float(proximal_mu),
+            "server_round": int(rnd),  # Pass round number to clients
+        }
+    
+    fit_config = fit_config_fn(1)  # Default for initial_parameters
 
     strategy = SavingFedProx(
         fraction_fit=fraction_fit,
@@ -144,8 +157,8 @@ def create_server_strategy(
         min_evaluate_clients=min_fit_clients,
         min_available_clients=min_available_clients,
         initial_parameters=initial_parameters,
-        on_fit_config_fn=lambda rnd: fit_config,
-        on_evaluate_config_fn=lambda rnd: fit_config,
+        on_fit_config_fn=fit_config_fn,
+        on_evaluate_config_fn=evaluate_config_fn,
         proximal_mu=float(proximal_mu),
         model_builder=lambda: build_lstm_model(input_shape=input_shape),
         out_model_path=out_model_path,

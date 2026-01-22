@@ -609,7 +609,7 @@ def visualize_rul_vs_cycles(partitions_with_rul: List, output_dir: str, num_engi
                         fontsize=12, fontweight='bold')
             ax.legend(loc='best', fontsize=9)
             ax.grid(True, alpha=0.3)
-            ax.invert_yaxis()  # RUL decreases over time, so invert for better visualization
+            # Removed invert_yaxis() - show RUL decreasing naturally
         
         # Hide empty subplots
         for idx in range(n_engines, len(axes)):
@@ -640,7 +640,7 @@ def visualize_rul_vs_cycles(partitions_with_rul: List, output_dir: str, num_engi
                     fontsize=14, fontweight='bold')
         ax.legend(loc='best', fontsize=10)
         ax.grid(True, alpha=0.3)
-        ax.invert_yaxis()  # RUL decreases over time
+        # Removed invert_yaxis() - show RUL decreasing naturally
         
         plt.tight_layout()
         output_path = os.path.join(output_dir, f"rul_vs_cycles_comparison_client_{client_id}.png")
@@ -669,7 +669,7 @@ def visualize_rul_vs_cycles(partitions_with_rul: List, output_dir: str, num_engi
                     fontsize=14, fontweight='bold')
         ax.legend(loc='best', fontsize=10)
         ax.grid(True, alpha=0.3)
-        ax.invert_yaxis()  # RUL decreases over time
+        # Removed invert_yaxis() - show RUL decreasing naturally
         
         plt.tight_layout()
         output_path = os.path.join(output_dir, f"rul_vs_cycles_normalized_client_{client_id}.png")
@@ -700,8 +700,20 @@ def main():
         print(f"\nError splitting dataset: {e}")
         return 1
     
+    # Randomly select 4 clients
+    if len(data_partitions) > 4:
+        np.random.seed(42)  # For reproducibility
+        selected_indices = np.random.choice(len(data_partitions), size=4, replace=False)
+        selected_indices = sorted(selected_indices)  # Sort for consistent ordering
+        selected_partitions = [data_partitions[i] for i in selected_indices]
+        print(f"\nRandomly selected 4 clients out of {len(data_partitions)}: {selected_indices}")
+    else:
+        selected_partitions = data_partitions
+        selected_indices = list(range(len(data_partitions)))
+        print(f"\nUsing all {len(data_partitions)} clients (less than 4 available)")
+    
     # Compute RUL for each partition
-    partitions_with_rul = compute_rul_for_partitions(data_partitions)
+    partitions_with_rul = compute_rul_for_partitions(selected_partitions)
     
     # Create output directory
     os.makedirs(args.output_dir, exist_ok=True)
@@ -712,7 +724,7 @@ def main():
     # Visualize sensor variance differences
     visualize_sensor_variance(partitions_with_rul, args.output_dir)
     
-    # Visualize sensor trends for engines
+    # Visualize sensor trends for engines (sensor data over time)
     visualize_sensor_trends(partitions_with_rul, args.output_dir, 
                            num_engines_per_client=args.num_engines_per_client,
                            sensors_to_plot=args.sensors_to_plot)
@@ -723,6 +735,7 @@ def main():
     
     print(f"\n" + "=" * 60)
     print(f"Visualization complete! Outputs saved to: {args.output_dir}")
+    print(f"Visualized {len(partitions_with_rul)} clients: {selected_indices}")
     print("=" * 60)
     
     return 0

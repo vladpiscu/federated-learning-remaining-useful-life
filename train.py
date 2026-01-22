@@ -126,7 +126,7 @@ def main():
         windows_array,
         rul_array,
         validation_split=0.2,
-        epochs=20,
+        epochs=10,
         batch_size=64,
         verbose=1
     )

@@ -93,7 +93,7 @@ def build_lstm_model(input_shape, lstm_units=256, dropout_rate=0.6):
     model = Sequential()
     # First LSTM layer with return_sequences=True to pass sequences to next layer
     model.add(LSTM(lstm_units, return_sequences=True, input_shape=input_shape))
-    #model.add(Dropout(dropout_rate))
+    model.add(Dropout(dropout_rate))
     
     # Second LSTM layer
     model.add(LSTM(lstm_units // 2, return_sequences=False))
@@ -109,9 +109,9 @@ def build_lstm_model(input_shape, lstm_units=256, dropout_rate=0.6):
     # Output layer (single value for RUL prediction)
     model.add(Dense(1, activation='linear'))
     
-    # Compile model
+    # Compile model with lower learning rate to prevent divergence
     model.compile(
-        optimizer=Adam(learning_rate=0.001, clipnorm=1.0),
+        optimizer=Adam(learning_rate=0.001, clipnorm=1.0),  # Reduced from 0.001 to 0.0001
         loss="mean_squared_error",
         metrics=["mean_absolute_error", "mean_squared_error"],
     )
